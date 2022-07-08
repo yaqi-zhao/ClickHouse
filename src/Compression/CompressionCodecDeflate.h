@@ -8,6 +8,7 @@
 #include <Parsers/StringRange.h>
 #include <qpl/qpl.h>
 #include <x86intrin.h>
+#include <Common/logger_useful.h>
 namespace Poco
 {
 class Logger;
@@ -97,6 +98,7 @@ private:
         if (size == 0)
         {
             const auto status = qpl_get_job_size(PATH, &size);
+            LOG_WARNING(log, "qpl_get_job_size status: {}, size: {} ", status, size);
             if (status != QPL_STS_OK)
             {
                 return -1;
@@ -109,11 +111,13 @@ private:
     {
         if (qpl_job_ptr == nullptr)
         {
+            LOG_WARNING(log, "qpl_job_ptr is nullptr");
             return -1;
         }
         auto status = qpl_init_job(PATH, qpl_job_ptr);
         if (status != QPL_STS_OK)
         {
+            LOG_WARNING(log, "qpl_init_job status: {}. PATH: {}", status, PATH);
             return -1;
         }
         return 0;
@@ -126,8 +130,10 @@ private:
         if (initialized == false)
         {
             const int32_t size = get_job_size_helper();
-            if (size < 0)
+            if (size < 0) {
+                LOG_WARNING(log, "get_job_size_helper size < 0");
                 return -1;
+            }
             for (int i = 0; i < jobPoolSize; ++i)
             {
                 jobPool[i] = nullptr;

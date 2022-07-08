@@ -15,7 +15,7 @@ set (QPL_SRC_DIR "${ClickHouse_SOURCE_DIR}/contrib/qpl/sources")
 set (QPL_BINARY_DIR "${ClickHouse_BINARY_DIR}/build/contrib/qpl")
 set (UUID_DIR "${ClickHouse_SOURCE_DIR}/contrib/qpl-cmake")
 
-set (EFFICIENT_WAIT ON)
+set (EFFICIENT_WAIT OFF)
 set (BLOCK_ON_FAULT ON)
 set (LOG_HW_INIT OFF)
 set (SANITIZE_MEMORY OFF)
