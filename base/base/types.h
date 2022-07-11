@@ -14,7 +14,7 @@ using char8_t = unsigned char;
 
 /// This is needed for more strict aliasing. https://godbolt.org/z/xpJBSb https://stackoverflow.com/a/57453713
 #if !defined(PVS_STUDIO) /// But PVS-Studio does not treat it correctly.
-using UInt8 = char8_t;
+using UInt8 = unsigned char;
 #else
 using UInt8 = uint8_t;
 #endif

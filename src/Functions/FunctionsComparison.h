@@ -41,6 +41,13 @@
 #include <limits>
 #include <type_traits>
 
+#include <Common/logger_useful.h>
+#if defined(__AVX512F__) 
+#include "qpl/qpl.hpp"
+#include <immintrin.h>
+#endif
+#include "iostream"
+
 #if USE_EMBEDDED_COMPILER
 #include <DataTypes/Native.h>
 
@@ -625,9 +632,57 @@ private:
             auto col_res = ColumnUInt8::create();
 
             ColumnUInt8::Container & vec_res = col_res->getData();
-            vec_res.resize(col_left->size());
-            NumComparisonImpl<T0, T1, Op<T0, T1>>::vectorConstant(col_left->getData(), col_right_const->template getValue<T1>(), vec_res);
+            vec_res.resize_fill(col_left->size(), 0);
+#if defined(__AVX512F__)                
+            if (std::is_same<T0,UInt8>::value && std::is_same<T1, UInt8>::value) {
+                size_t data_length = col_left->getData().size();
+                if (data_length > 0) {
+                    const uint8_t * res_start = reinterpret_cast<const uint8_t*>(col_left->getData().data());
+                    const uint8_t * res_end = reinterpret_cast<const uint8_t*>(col_left->getData().end());
+                    std::vector<uint8_t> destination(col_left->size() *4 , 0);
+                    const auto *indices = reinterpret_cast<const uint32_t *>(destination.data());
+                    uint8_t * c_start = vec_res.data();
+                    // uint8_t * c_end = vec_res.end();  
+                    for (size_t i = 0; i < col_left->getData().size(); i++) {
+                        LOG_WARNING(&Poco::Logger::get("Functions"), "vec_res, initial data: {}", c_start[i]);
+                    }
+                    uint8_t boundary = col_right_const->template getValue<T1>();
+                    auto scan_operation = qpl::scan_operation::builder(qpl::equals, boundary)
+                            .input_vector_width(sizeof(uint8_t) * 8)
+                            .output_vector_width(sizeof(uint8_t) * 32)
+                            .parser<qpl::parsers::big_endian_packed_array>(col_left->getData().size())
+                            .is_inclusive(false)
+                            .build();
 
+                    auto scan_result = qpl::execute<qpl::hardware>(scan_operation,
+                                res_start,
+                                res_end,
+                                std::begin(destination),
+                                std::end(destination));  
+                    // LOG_WARNING(&Poco::Logger::get("Functions"), "rows: {}, data size: {}, indices: {}, c_start: {}", col_left->size(), col_left->getData().size(), indices[0], c_start[0]);
+                    scan_result.handle([&c_start, &indices, &res_start](uint32_t scan_size) -> void {
+                           // Check if everything was alright
+                        //    LOG_WARNING(&Poco::Logger::get("Functions"), "indices:{} , c_start: {}, scan_size: {}", indices[0], c_start[0], scan_size);
+                           for (uint32_t i = 0; i < scan_size; i++) {
+                            LOG_WARNING(&Poco::Logger::get("Functions"), "indices index: {}, res: {}, ", indices[i], res_start[indices[i]]);
+                            c_start[indices[i]] = 1;
+                           }
+                       },
+                       [](uint32_t status_code) -> void {
+                        //    throw std::runtime_error("Error: Status code - " + std::to_string(status_code));
+                        LOG_ERROR(&Poco::Logger::get("Functions"), "error status: {}", status_code);
+                       });
+                    for (size_t i = 0; i < col_left->getData().size(); i++) {
+                        LOG_WARNING(&Poco::Logger::get("Functions"), "vectorConstant1, source: {}, index: {}, destination: {}", res_start[i], c_start[i], destination[i]);
+                    }  
+                }
+                // NumComparisonImpl<T0, T1, Op<T0, T1>>::vectorConstant(col_left->getData(), col_right_const->template getValue<T1>(), vec_res);
+            } else {
+                NumComparisonImpl<T0, T1, Op<T0, T1>>::vectorConstant(col_left->getData(), col_right_const->template getValue<T1>(), vec_res);
+            }
+#else            
+            NumComparisonImpl<T0, T1, Op<T0, T1>>::vectorConstant(col_left->getData(), col_right_const->template getValue<T1>(), vec_res);
+#endif
             return col_res;
         }
 
