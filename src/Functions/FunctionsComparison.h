@@ -45,6 +45,7 @@
 #if defined(__AVX512F__) 
 #include "qpl/qpl.hpp"
 #include <immintrin.h>
+#include "qpl/qpl.h"
 #endif
 #include "iostream"
 
@@ -633,7 +634,58 @@ private:
 
             ColumnUInt8::Container & vec_res = col_res->getData();
             vec_res.resize_fill(col_left->size(), 0);
-#if defined(__AVX512F__)                
+#if defined(__AVX512F__)   
+            if (std::is_same<T0,UInt8>::value && std::is_same<T1, UInt8>::value) {
+                size_t data_length = col_left->getData().size();
+                if (data_length > 0) {
+                    const uint8_t * res_start = reinterpret_cast<const uint8_t*>(col_left->getData().data());
+                    std::vector<uint8_t> destination(col_left->size() *4 , 0);
+                    const auto *indices = reinterpret_cast<const uint32_t *>(destination.data());
+                    uint32_t size = 0;
+                    uint8_t boundary = col_right_const->template getValue<T1>();
+                    qpl_status  status = status = qpl_get_job_size(qpl_path_hardware, &size);
+                    if (status != QPL_STS_OK) {
+                        LOG_ERROR(&Poco::Logger::get("Functions"), "QPL qpl_get_job_size status: {}", status);
+                        throw std::runtime_error("QPL qpl_get_job_size fail");
+                    }
+                    qpl_job *job =  reinterpret_cast<qpl_job*>(std::malloc(size));
+                    status = qpl_init_job(qpl_path_hardware, job);
+                    if (status != QPL_STS_OK) {
+                        LOG_ERROR(&Poco::Logger::get("Functions"), "QPL qpl_init_job status: {}", status);
+                        throw std::runtime_error("QPL qpl_init_job fail");
+                    }
+                    // performing an operation
+                    job->next_in_ptr = const_cast<uint8_t*>(res_start);
+                    job->available_in = col_left->getData().size();
+                    job->next_out_ptr = destination.data();
+                    job->available_out = static_cast<uint32_t>(destination.size());
+                    job->op = qpl_op_scan_eq;
+                    job->src1_bit_width     = 8;
+                    job->num_input_elements = col_left->getData().size();
+                    job->out_bit_width = qpl_ow_32;
+                    job->param_low = boundary;
+
+                    status = qpl_execute_job(job);
+                    if (status != QPL_STS_OK) {
+                        LOG_ERROR(&Poco::Logger::get("Functions"), "QPL qpl_execute_job status: {}", std::to_string(status));
+                        throw std::runtime_error("QPL qpl_execute_job fail");
+                    }
+
+                    const auto indices_byte_size = job->total_out;
+                    status = qpl_fini_job(job);
+                    if (status != QPL_STS_OK) {
+                        LOG_ERROR(&Poco::Logger::get("Functions"), "QPL qpl_fini_job status: {}", std::to_string(status));
+                        throw std::runtime_error("QPL qpl_fini_job fail");
+                    }
+                    std::free(job);
+
+                    uint8_t * c_start = vec_res.data();
+                    for (uint32_t i = 0; i < (indices_byte_size / 4); i++) {
+                        c_start[indices[i]] = 1;
+                    }
+                }
+            }
+#elif defined(__AVX512RF__)                
             if (std::is_same<T0,UInt8>::value && std::is_same<T1, UInt8>::value) {
                 size_t data_length = col_left->getData().size();
                 if (data_length > 0) {
@@ -643,9 +695,7 @@ private:
                     const auto *indices = reinterpret_cast<const uint32_t *>(destination.data());
                     uint8_t * c_start = vec_res.data();
                     // uint8_t * c_end = vec_res.end();  
-                    for (size_t i = 0; i < col_left->getData().size(); i++) {
-                        LOG_WARNING(&Poco::Logger::get("Functions"), "vec_res, initial data: {}", c_start[i]);
-                    }
+                    
                     uint8_t boundary = col_right_const->template getValue<T1>();
                     auto scan_operation = qpl::scan_operation::builder(qpl::equals, boundary)
                             .input_vector_width(sizeof(uint8_t) * 8)
@@ -660,11 +710,10 @@ private:
                                 std::begin(destination),
                                 std::end(destination));  
                     // LOG_WARNING(&Poco::Logger::get("Functions"), "rows: {}, data size: {}, indices: {}, c_start: {}", col_left->size(), col_left->getData().size(), indices[0], c_start[0]);
-                    scan_result.handle([&c_start, &indices, &res_start](uint32_t scan_size) -> void {
+                    scan_result.handle([&c_start, &indices](uint32_t scan_size) -> void {
                            // Check if everything was alright
-                        //    LOG_WARNING(&Poco::Logger::get("Functions"), "indices:{} , c_start: {}, scan_size: {}", indices[0], c_start[0], scan_size);
                            for (uint32_t i = 0; i < scan_size; i++) {
-                            LOG_WARNING(&Poco::Logger::get("Functions"), "indices index: {}, res: {}, ", indices[i], res_start[indices[i]]);
+                            // LOG_WARNING(&Poco::Logger::get("Functions"), "indices index: {}, res: {}, ", indices[i], res_start[indices[i]]);
                             c_start[indices[i]] = 1;
                            }
                        },
@@ -672,9 +721,9 @@ private:
                         //    throw std::runtime_error("Error: Status code - " + std::to_string(status_code));
                         LOG_ERROR(&Poco::Logger::get("Functions"), "error status: {}", status_code);
                        });
-                    for (size_t i = 0; i < col_left->getData().size(); i++) {
-                        LOG_WARNING(&Poco::Logger::get("Functions"), "vectorConstant1, source: {}, index: {}, destination: {}", res_start[i], c_start[i], destination[i]);
-                    }  
+                    // for (size_t i = 0; i < col_left->getData().size(); i++) {
+                    //     LOG_WARNING(&Poco::Logger::get("Functions"), "vectorConstant1, source: {}, index: {}, destination: {}", res_start[i], c_start[i], destination[i]);
+                    // }  
                 }
                 // NumComparisonImpl<T0, T1, Op<T0, T1>>::vectorConstant(col_left->getData(), col_right_const->template getValue<T1>(), vec_res);
             } else {
