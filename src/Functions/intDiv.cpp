@@ -80,7 +80,7 @@ struct DivideIntegralByConstantImpl
         if (unlikely(static_cast<A>(b) == 0))
             throw Exception("Division by zero", ErrorCodes::ILLEGAL_DIVISION);
 
-        divideImpl(a_pos, b, c_pos, size);
+        // divideImpl(a_pos, b, c_pos, size);
     }
 
 private:

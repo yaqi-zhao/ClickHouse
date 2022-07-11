@@ -727,7 +727,7 @@ private:
         const size_t delimiter_size,
         ColumnString::Chars & dst_chars,
         ColumnString::Offsets & dst_string_offsets,
-        const char8_t * null_map)
+        const unsigned char * null_map)
     {
         size_t size = src_array_offsets.size();
 
@@ -788,7 +788,7 @@ private:
         const ColumnArray & col_arr,
         const String & delimiter,
         ColumnString & col_res,
-        const char8_t * null_map = nullptr)
+        const unsigned char * null_map = nullptr)
     {
         executeInternal(
             col_string.getChars(),

@@ -287,7 +287,9 @@ target_compile_definitions(middle_layer_lib PUBLIC -DQPL_LIB)
 # [SUBDIR]c_api
 file(GLOB_RECURSE QPL_C_API_SRC 
         ${QPL_SRC_DIR}/c_api/*.c
-        ${QPL_SRC_DIR}/c_api/*.cpp)
+        ${QPL_SRC_DIR}/c_api/*.cpp
+        ${QPL_SRC_DIR}/cpp_api/util/*.cpp
+        ${QPL_SRC_DIR}/cpp_api/operations/analytics/*.cpp)
 
 add_library(_qpl STATIC ${QPL_C_API_SRC}
          $<TARGET_OBJECTS:middle_layer_lib>
@@ -301,7 +303,9 @@ add_library(_qpl STATIC ${QPL_C_API_SRC}
 target_include_directories(_qpl
         PUBLIC $<BUILD_INTERFACE:${QPL_PROJECT_DIR}/include/>
         PRIVATE $<TARGET_PROPERTY:middle_layer_lib,INTERFACE_INCLUDE_DIRECTORIES>
-        PRIVATE $<BUILD_INTERFACE:${QPL_SRC_DIR}/c_api>)
+        PRIVATE $<BUILD_INTERFACE:${QPL_SRC_DIR}/c_api>
+        PRIVATE $<BUILD_INTERFACE:${QPL_SRC_DIR}/cpp_api/util>
+        PRIVATE $<BUILD_INTERFACE:${QPL_SRC_DIR}/cpp_api/operations/analytics>)
 
 target_compile_options(_qpl
         PRIVATE $<$<C_COMPILER_ID:GNU>:${QPL_LINUX_TOOLCHAIN_REQUIRED_FLAGS};

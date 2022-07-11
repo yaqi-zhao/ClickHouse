@@ -36,7 +36,7 @@ namespace
         }
         return res;
     }
-    void fuzzBits(const char8_t * ptr_in, char8_t * ptr_out, size_t len, double prob)
+    void fuzzBits(const unsigned char * ptr_in, unsigned char * ptr_out, size_t len, double prob)
     {
         pcg64_fast rng(randomSeed()); // TODO It is inefficient. We should use SIMD PRNG instead.
 
