@@ -42,7 +42,7 @@
 #include <type_traits>
 
 #include <Common/logger_useful.h>
-#if defined(__AVX512F__) 
+#ifdef ENABLE_QPL_ANALYSIS
 #include "qpl/qpl.hpp"
 #include <immintrin.h>
 #endif
@@ -599,6 +599,17 @@ struct NameGreater         { static constexpr auto name = "greater"; };
 struct NameLessOrEquals    { static constexpr auto name = "lessOrEquals"; };
 struct NameGreaterOrEquals { static constexpr auto name = "greaterOrEquals"; };
 
+static inline ALWAYS_INLINE UInt64 rdtsc()
+{
+#if defined(__x86_64__)
+    UInt32 a, d;
+    __asm__ volatile ("rdtsc" : "=a" (a), "=d" (d));
+    return static_cast<UInt64>(a) | (static_cast<UInt64>(d) << 32);
+#else
+    // TODO: make for arm64
+    return 0;
+#endif
+}
 
 template <template <typename, typename> class Op, typename Name>
 class FunctionComparison : public IFunction
@@ -633,7 +644,7 @@ private:
 
             ColumnUInt8::Container & vec_res = col_res->getData();
             vec_res.resize_fill(col_left->size(), 0);
-#if defined(__AVX512F__)                
+#ifdef ENABLE_QPL_ANALYSIS                
             if (std::is_same<T0,UInt8>::value && std::is_same<T1, UInt8>::value) {
                 size_t data_length = col_left->getData().size();
                 if (data_length > 0) {
@@ -643,9 +654,10 @@ private:
                     const auto *indices = reinterpret_cast<const uint32_t *>(destination.data());
                     uint8_t * c_start = vec_res.data();
                     // uint8_t * c_end = vec_res.end();  
-                    for (size_t i = 0; i < col_left->getData().size(); i++) {
-                        LOG_WARNING(&Poco::Logger::get("Functions"), "vec_res, initial data: {}", c_start[i]);
-                    }
+                    // for (size_t i = 0; i < col_left->getData().size(); i++) {
+                    //     LOG_WARNING(&Poco::Logger::get("Functions"), "vec_res, initial data: {}", c_start[i]);
+                    // }
+                    // uint64_t start = rdtsc();
                     uint8_t boundary = col_right_const->template getValue<T1>();
                     auto scan_operation = qpl::scan_operation::builder(qpl::equals, boundary)
                             .input_vector_width(sizeof(uint8_t) * 8)
@@ -660,11 +672,11 @@ private:
                                 std::begin(destination),
                                 std::end(destination));  
                     // LOG_WARNING(&Poco::Logger::get("Functions"), "rows: {}, data size: {}, indices: {}, c_start: {}", col_left->size(), col_left->getData().size(), indices[0], c_start[0]);
-                    scan_result.handle([&c_start, &indices, &res_start](uint32_t scan_size) -> void {
+                    scan_result.handle([&c_start, &indices](uint32_t scan_size) -> void {
                            // Check if everything was alright
                         //    LOG_WARNING(&Poco::Logger::get("Functions"), "indices:{} , c_start: {}, scan_size: {}", indices[0], c_start[0], scan_size);
                            for (uint32_t i = 0; i < scan_size; i++) {
-                            LOG_WARNING(&Poco::Logger::get("Functions"), "indices index: {}, res: {}, ", indices[i], res_start[indices[i]]);
+                            // LOG_WARNING(&Poco::Logger::get("Functions"), "indices index: {}, res: {}, ", indices[i], res_start[indices[i]]);
                             c_start[indices[i]] = 1;
                            }
                        },
@@ -672,16 +684,21 @@ private:
                         //    throw std::runtime_error("Error: Status code - " + std::to_string(status_code));
                         LOG_ERROR(&Poco::Logger::get("Functions"), "error status: {}", status_code);
                        });
-                    for (size_t i = 0; i < col_left->getData().size(); i++) {
-                        LOG_WARNING(&Poco::Logger::get("Functions"), "vectorConstant1, source: {}, index: {}, destination: {}", res_start[i], c_start[i], destination[i]);
-                    }  
+                    // std::cout << "qpl filter: " << rdtsc() - start << std::endl;
+                    // for (size_t i = 0; i < col_left->getData().size(); i++) {
+                    //     LOG_WARNING(&Poco::Logger::get("Functions"), "vectorConstant1, source: {}, index: {}, destination: {}", res_start[i], c_start[i], destination[i]);
+                    // }  
                 }
                 // NumComparisonImpl<T0, T1, Op<T0, T1>>::vectorConstant(col_left->getData(), col_right_const->template getValue<T1>(), vec_res);
             } else {
+                // uint64_t start = rdtsc();
                 NumComparisonImpl<T0, T1, Op<T0, T1>>::vectorConstant(col_left->getData(), col_right_const->template getValue<T1>(), vec_res);
+                // std::cout << "original filter: " << rdtsc() - start << std::endl;
             }
-#else            
+#else           
+            // uint64_t start = rdtsc();
             NumComparisonImpl<T0, T1, Op<T0, T1>>::vectorConstant(col_left->getData(), col_right_const->template getValue<T1>(), vec_res);
+            // std::cout << "original filter: " << rdtsc() - start << std::endl;
 #endif
             return col_res;
         }

@@ -36,6 +36,12 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/case_conv.hpp>
 
+#ifdef ENABLE_QPL_ANALYSIS
+#include <qpl/qpl.hpp>
+#endif
+#include <iostream>
+using namespace std;
+
 /// UINT16 and UINT32 are processed separately, see comments in readColumnFromArrowColumn.
 #define FOR_ARROW_NUMERIC_TYPES(M) \
         M(arrow::Type::UINT8, DB::UInt8) \
@@ -578,6 +584,281 @@ ArrowColumnToCHColumn::ArrowColumnToCHColumn(
 {
 }
 
+// static inline ALWAYS_INLINE UInt64 rdtsc()
+// {
+// #if defined(__x86_64__)
+//     UInt32 a, d;
+//     __asm__ volatile ("rdtsc" : "=a" (a), "=d" (d));
+//     return static_cast<UInt64>(a) | (static_cast<UInt64>(d) << 32);
+// #else
+//     // TODO: make for arm64
+//     return 0;
+// #endif
+// }
+
+#ifdef ENABLE_QPL_ANALYSIS
+auto maskAfterScan(std::shared_ptr<arrow::Buffer> & buffer, std::vector<uint8_t> & out_mask)
+{
+    // UInt64 tsc = rdtsc();
+    auto scan_operation = qpl::scan_operation::builder(qpl::equals, 1)
+            .input_vector_width(8)
+            .output_vector_width(1)
+            .parser<qpl::parsers::little_endian_packed_array>(buffer->size())
+            .is_inclusive(false)
+            .build();
+    // cout << " qpl build scan_operation: " << rdtsc() - tsc << endl;
+    // tsc = rdtsc();            
+    const auto scan_result = qpl::execute<qpl::hardware>(scan_operation,
+                                                         buffer->data(),
+                                                         buffer->data() + buffer->size(),
+                                                         std::begin(out_mask),
+                                                         std::end(out_mask));
+    // cout << " qpl exec scan_operation: " << rdtsc() - tsc << endl;                                                         
+    return scan_result;
+
+}
+
+
+auto maskAfterScan_1(std::shared_ptr<arrow::Buffer> & buffer, std::vector<uint8_t> & destination)
+{
+    // cout << "buffer size: " << buffer->size() << endl;
+    // UInt64 tsc = rdtsc();
+    auto scan_operation = qpl::scan_operation::builder(qpl::equals, 1)
+                            .input_vector_width(sizeof(uint8_t) * 8)
+                            .output_vector_width(sizeof(uint8_t) * 32)
+                            .parser<qpl::parsers::big_endian_packed_array>(buffer->size())
+                            .is_inclusive(false)
+                            .build();
+
+
+    auto scan_result = qpl::execute<qpl::hardware>(scan_operation,
+                                buffer->data(),
+                                buffer->data() + buffer->size(),
+                                std::begin(destination),
+                                std::end(destination));   
+    // cout << " maskAfterScan_1: " << rdtsc() - tsc << endl;                                
+    
+    return scan_result;
+
+}
+
+template <typename NumericType, typename VectorType = ColumnVector<NumericType>>
+static uint32_t execScan(ColumnWithTypeAndName & out_column, uint32_t mask_length,
+                std::vector<uint8_t> & mask_after_scan, std::shared_ptr<arrow::Buffer> buffer)
+{
+    auto & column_data = const_cast<VectorType &>(static_cast<const VectorType &>(*(out_column.column))).getData();
+    // auto & column_data = (static_cast<VectorType &>(*(out_column.column))).getData();
+    // column_data.reserve(scan_size);
+    // UInt64 tsc = rdtsc();
+    std::vector<uint8_t> destination(buffer->size(), 0);
+    // cout << "init destination time: " << rdtsc() - tsc << ", size: " << buffer->size() << endl;
+
+    auto select_operation = qpl::select_operation(mask_after_scan.data(), mask_length);
+    const auto select_result = qpl::execute<qpl::hardware>(select_operation,
+                                                    buffer->data(),
+                                                    buffer->data() + buffer->size(),
+                                                    destination.begin(),
+                                                    destination.end());
+    // cout << "qpl execute select operation: " << rdtsc() - tsc << endl;
+    // tsc = rdtsc();
+    uint32_t filter_num = 0;                                                    
+    select_result.handle([&filter_num, &destination, &column_data](uint32_t select_size) -> void {
+                                    // Check if everything was alright
+                                  filter_num = select_size;
+                                  if (select_size > 0) {
+                                    column_data.insert(destination.data(), destination.data() + select_size);
+                                  }
+                                },
+                                [](uint32_t status_code) -> void {
+                                    throw std::runtime_error("Error: Status code - " + std::to_string(status_code));
+                                });   
+    // cout << " column data insert: " << rdtsc() - tsc << endl;
+    return filter_num;
+}
+
+template <typename NumericType, typename VectorType = ColumnVector<NumericType>>
+static void execScan_1(ColumnWithTypeAndName & out_column, auto scan_result,
+                std::vector<uint8_t> & destination, std::shared_ptr<arrow::Buffer> buffer)
+{
+    // UInt64 tsc = rdtsc();
+    auto & column_data = const_cast<VectorType &>(static_cast<const VectorType &>(*(out_column.column))).getData();
+    const auto *indices = reinterpret_cast<const uint32_t *>(destination.data());
+
+    scan_result.handle([&indices, &buffer, &column_data](uint32_t scan_size) -> void {
+                           for (uint32_t i = 0; i < scan_size; i++) {
+                            column_data.push_back(buffer->data()[indices[i]]);
+                           }
+                       },
+                       [](uint32_t status_code) -> void {
+                           throw std::runtime_error("Error: Status code - " + std::to_string(status_code));
+                       });                                                   
+    // cout << "column data push back: " << rdtsc() - tsc << endl;                                          
+}
+
+void ArrowColumnToCHColumn::arrowColumnsToCHChunkWithFilter(Chunk & res, NameToColumnPtr & name_to_column_ptr)
+{
+    Columns columns_list;
+    columns_list.reserve(header.rows());
+    std::vector<ColumnWithTypeAndName> column_type_name;
+    uint32_t rows = 0;
+
+    for (size_t column_i = 0, columns = header.columns(); column_i < columns; ++column_i) {
+        auto internal_type = std::make_shared<DataTypeUInt8>();
+        auto internal_column = internal_type->createColumn();
+        column_type_name.push_back({std::move(internal_column), std::move(internal_type), header.getByPosition(column_i).name});
+    }
+
+    std::shared_ptr<arrow::ChunkedArray> filt_arrow_column = name_to_column_ptr["LO_LINENUMBER"];
+    // UInt64 tsc = rdtsc();
+    for (size_t chunk_i = 0, num_chunks = static_cast<size_t>(filt_arrow_column->num_chunks()); chunk_i < num_chunks; ++chunk_i) {
+        std::shared_ptr<arrow::Array> filt_chunk = filt_arrow_column->chunk(chunk_i);
+        std::vector<uint8_t> mask_after_scan((filt_chunk->length() +7) / 8, 4);
+        if (filt_chunk->length() == 0)
+            continue;
+        std::shared_ptr<arrow::Buffer> filt_buffer = filt_chunk->data()->buffers[1];
+        // cout << "mask vector: " << rdtsc() - tsc << endl;
+        auto scan_result = maskAfterScan(filt_buffer, mask_after_scan);
+        bool is_all_zero = std::all_of(std::begin(mask_after_scan), std::end(mask_after_scan), [](uint32_t item) {return item == 0;});
+        if (is_all_zero) {
+            continue;
+        }
+        // cout << "is all zero: " << rdtsc() - tsc << endl;
+        uint32_t mask_length = 0;
+        scan_result.handle([&mask_length](uint32_t value) -> void {
+                           // Converting total elements processed to the byte size of the mask.
+                           mask_length = (value + 7u) / 8u;
+                       },
+                       [](uint32_t status_code) -> void {
+                           throw std::runtime_error("Error: Status code - " + std::to_string(status_code));
+                       });
+
+        int after_filt_rows = 0;
+        for (size_t column_i = 0, columns = header.columns(); column_i < columns; ++column_i) {
+            auto arrow_column = name_to_column_ptr[header.getByPosition(column_i).name]; 
+            std::shared_ptr<arrow::Array> chunk = arrow_column->chunk(chunk_i);
+            std::shared_ptr<arrow::Buffer> buffer = chunk->data()->buffers[1];
+            after_filt_rows = execScan<UInt8>(column_type_name[column_i], mask_length, mask_after_scan, buffer);
+        }
+        rows += after_filt_rows;
+    }
+
+    // convert ColumnWithTypeAndName to column_list
+    for (size_t column_i = 0, columns = header.columns(); column_i < columns; ++ column_i) {
+        auto column = column_type_name[column_i];
+        const ColumnWithTypeAndName & header_column = header.getByPosition(column_i);
+        try
+        {
+            column.column = castColumn(column, header_column.type);
+        }
+        catch (Exception & e)
+        {
+            e.addMessage("while converting column {}" + header_column.name + " from type {} " + column.type->getName() + "to type {}" + header_column.type->getName());
+            throw e;
+        }
+        column.type = header_column.type;
+        columns_list.push_back(std::move(column.column));    
+    }
+    res.setColumns(columns_list, rows);
+}
+
+
+void ArrowColumnToCHColumn::arrowColumnsToCHChunkWithFilter_1(Chunk & res, NameToColumnPtr & name_to_column_ptr)
+{
+    Columns columns_list;
+    columns_list.reserve(header.rows());
+    std::vector<ColumnWithTypeAndName> column_type_name;
+    uint32_t rows = 0;
+
+    for (size_t column_i = 0, columns = header.columns(); column_i < columns; ++column_i) {
+        auto internal_type = std::make_shared<DataTypeUInt8>();
+        auto internal_column = internal_type->createColumn();
+        column_type_name.push_back({std::move(internal_column), std::move(internal_type), header.getByPosition(column_i).name});
+    }
+
+    std::shared_ptr<arrow::ChunkedArray> filt_arrow_column = name_to_column_ptr["LO_LINENUMBER"];
+    // UInt64 start = rdtsc();
+    for (size_t chunk_i = 0, num_chunks = static_cast<size_t>(filt_arrow_column->num_chunks()); chunk_i < num_chunks; ++chunk_i) {
+        // UInt64 tsc = rdtsc();
+        std::shared_ptr<arrow::Array> filt_chunk = filt_arrow_column->chunk(chunk_i);
+        // cout << "filter arrow colum get chunk: " << rdtsc() - tsc << endl;
+        // tsc = rdtsc();
+        if (filt_chunk->length() == 0)
+            continue;
+        std::shared_ptr<arrow::Buffer> filt_buffer = filt_chunk->data()->buffers[1];
+        // cout << "get filter buffer time: " << rdtsc() - tsc << endl;
+        // tsc = rdtsc();
+        std::vector<uint8_t> destination(filt_chunk->length() *4 , 0);
+        // cout << "before mask after scan time: " << rdtsc() - tsc << ", destination length: " << destination.size() << endl;
+        // tsc = rdtsc();
+        
+
+        auto scan_operation = qpl::scan_operation::builder(qpl::equals, 1)
+                            .input_vector_width(sizeof(uint8_t) * 8)
+                            .output_vector_width(sizeof(uint8_t) * 32)
+                            .parser<qpl::parsers::big_endian_packed_array>(filt_buffer->size())
+                            .is_inclusive(false)
+                            .build();
+
+
+        auto scan_result = qpl::execute<qpl::hardware>(scan_operation,
+                                filt_buffer->data(),
+                                filt_buffer->data() + filt_buffer->size(),
+                                std::begin(destination),
+                                std::end(destination)); 
+
+        // auto scan_result = maskAfterScan_1(filt_buffer, destination);
+        // cout << "mask after scan time: " << rdtsc() - tsc << endl;
+        // tsc = rdtsc();
+        
+        uint32_t after_filt_rows = 0;
+        scan_result.handle([&after_filt_rows](uint32_t scan_size) -> void {
+                            after_filt_rows = scan_size;
+                       },
+                       [](uint32_t status_code) -> void {
+                           throw std::runtime_error("Error: Status code - " + std::to_string(status_code));
+                       });
+        // cout << "scan result handle time: " << rdtsc() - tsc << endl;
+
+        if (after_filt_rows <= 0) {
+            continue;
+        }
+        // // cout << "total columns: " << header.columns() << endl;
+        // tsc = rdtsc();
+        for (size_t column_i = 0, columns = header.columns(); column_i < columns; ++column_i) {
+            auto arrow_column = name_to_column_ptr[header.getByPosition(column_i).name]; 
+            std::shared_ptr<arrow::Array> chunk = arrow_column->chunk(chunk_i);
+            std::shared_ptr<arrow::Buffer> buffer = chunk->data()->buffers[1];
+            execScan_1<UInt8>(column_type_name[column_i], scan_result, destination, buffer);
+        }
+        rows += after_filt_rows;
+        // cout << "  exec transform time: " << rdtsc() - tsc;
+    }
+    // cout << "generate column time: " << rdtsc() - start << endl;
+    // convert ColumnWithTypeAndName to column_list
+    // tsc = rdtsc();
+    for (size_t column_i = 0, columns = header.columns(); column_i < columns; ++ column_i) {
+        auto column = column_type_name[column_i];
+        const ColumnWithTypeAndName & header_column = header.getByPosition(column_i);
+        try
+        {
+            column.column = castColumn(column, header_column.type);
+        }
+        catch (Exception & e)
+        {
+            e.addMessage("while converting column {}" + header_column.name + " from type {} " + column.type->getName() + "to type {}" + header_column.type->getName());
+            throw e;
+        }
+        column.type = header_column.type;
+        columns_list.push_back(std::move(column.column));    
+    }
+    res.setColumns(columns_list, rows);
+    // cout << "res reset column time: " << rdtsc() - tsc;
+
+}
+#endif
+
+
+
 void ArrowColumnToCHColumn::arrowTableToCHChunk(Chunk & res, std::shared_ptr<arrow::Table> & table)
 {
     NameToColumnPtr name_to_column_ptr;
@@ -592,7 +873,14 @@ void ArrowColumnToCHColumn::arrowTableToCHChunk(Chunk & res, std::shared_ptr<arr
         name_to_column_ptr[std::move(column_name)] = arrow_column;
     }
 
+    // UInt64 tsc = rdtsc();
+#ifdef ENABLE_QPL_ANALYSIS    
+    arrowColumnsToCHChunkWithFilter(res, name_to_column_ptr);
+#else    
     arrowColumnsToCHChunk(res, name_to_column_ptr);
+#endif    
+    // UInt64 tsc_diff = rdtsc() - tsc;
+    // cout << "arrow columns to CH chunk time: " << tsc_diff << endl;
 }
 
 void ArrowColumnToCHColumn::arrowColumnsToCHChunk(Chunk & res, NameToColumnPtr & name_to_column_ptr)

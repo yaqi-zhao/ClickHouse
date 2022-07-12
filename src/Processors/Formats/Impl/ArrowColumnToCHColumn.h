@@ -32,6 +32,9 @@ public:
 
     void arrowColumnsToCHChunk(Chunk & res, NameToColumnPtr & name_to_column_ptr);
 
+    void arrowColumnsToCHChunkWithFilter(Chunk & res, NameToColumnPtr & name_to_column_ptr);
+    void arrowColumnsToCHChunkWithFilter_1(Chunk & res, NameToColumnPtr & name_to_column_ptr);
+
     /// Get missing columns that exists in header but not in arrow::Schema
     std::vector<size_t> getMissingColumns(const arrow::Schema & schema) const;
 

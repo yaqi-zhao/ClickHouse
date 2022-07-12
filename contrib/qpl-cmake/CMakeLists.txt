@@ -316,7 +316,8 @@ target_compile_options(_qpl
 target_compile_definitions(_qpl
         PRIVATE -DQPL_LIB
         PRIVATE -DQPL_BADARG_CHECK
-        PUBLIC -DENABLE_QPL_COMPRESSION)
+        PUBLIC -DENABLE_QPL_COMPRESSION
+        PUBLIC -DENABLE_QPL_ANALYSIS)
 
 target_link_libraries(_qpl
         PRIVATE ${CMAKE_DL_LIBS})
