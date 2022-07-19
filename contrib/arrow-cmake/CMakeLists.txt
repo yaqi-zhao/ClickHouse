@@ -76,6 +76,8 @@ add_custom_command(OUTPUT orc_proto.pb.h orc_proto.pb.cc
 set(FLATBUFFERS_SRC_DIR "${ClickHouse_SOURCE_DIR}/contrib/flatbuffers")
 set(FLATBUFFERS_BINARY_DIR "${ClickHouse_BINARY_DIR}/contrib/flatbuffers")
 set(FLATBUFFERS_INCLUDE_DIR "${FLATBUFFERS_SRC_DIR}/include")
+# set (QPL_PROJECT_DIR "${ClickHouse_SOURCE_DIR}/contrib/qpl")
+# set (QPL_PROJECT_DIR_INCLUDE_DIR "${ClickHouse_SOURCE_DIR}/contrib/qpl/include")
 
 # set flatbuffers CMake options
 if (USE_STATIC_LIBRARIES)
@@ -88,6 +90,7 @@ endif ()
 set(FLATBUFFERS_BUILD_TESTS OFF CACHE BOOL "Skip flatbuffers tests")
 
 add_subdirectory(${FLATBUFFERS_SRC_DIR} "${FLATBUFFERS_BINARY_DIR}")
+# add_subdirectory(${QPL_PROJECT_DIR} "${QPL_BINARY_DIR}")
 
 add_library(_flatbuffers INTERFACE)
 if(USE_STATIC_LIBRARIES)
@@ -96,6 +99,7 @@ else()
     target_link_libraries(_flatbuffers INTERFACE flatbuffers_shared)
 endif()
 target_include_directories(_flatbuffers INTERFACE ${FLATBUFFERS_INCLUDE_DIR})
+# target_include_directories(_qpl INTERFACE ${QPL_PROJECT_DIR_INCLUDE_DIR})
 
 # ===  hdfs
 # NOTE: cannot use ch_contrib::hdfs since it's INCLUDE_DIRECTORIES does not includes trailing "hdfs/"
@@ -156,10 +160,11 @@ target_link_libraries(_orc PRIVATE
     ch_contrib::lz4
     ch_contrib::snappy
     ch_contrib::zlib
-    ch_contrib::zstd)
+    ch_contrib::zstd
+    ch_contrib::qpl)
 target_include_directories(_orc SYSTEM BEFORE PUBLIC ${ORC_INCLUDE_DIR})
 target_include_directories(_orc SYSTEM BEFORE PUBLIC ${ORC_BUILD_INCLUDE_DIR})
-target_include_directories(_orc SYSTEM PRIVATE
+target_include_directories(_orc SYSTEM PUBLIC
     ${ORC_SOURCE_SRC_DIR}
     ${ORC_SOURCE_WRAP_DIR}
     ${ORC_BUILD_SRC_DIR}
@@ -381,6 +386,7 @@ target_link_libraries(_arrow PRIVATE
     ch_contrib::snappy
     ch_contrib::zlib
     ch_contrib::zstd
+    ch_contrib::qpl
 )
 target_link_libraries(_arrow PUBLIC _orc)
 
@@ -389,8 +395,8 @@ add_dependencies(_arrow protoc)
 target_include_directories(_arrow SYSTEM BEFORE PUBLIC ${ARROW_SRC_DIR})
 target_include_directories(_arrow SYSTEM BEFORE PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/cpp/src")
 
-target_include_directories(_arrow SYSTEM PRIVATE ${ARROW_SRC_DIR})
-target_include_directories(_arrow SYSTEM PRIVATE ${HDFS_INCLUDE_DIR})
+target_include_directories(_arrow SYSTEM PUBLIC ${ARROW_SRC_DIR})
+target_include_directories(_arrow SYSTEM PUBLIC ${HDFS_INCLUDE_DIR})
 
 # === parquet
 
@@ -433,7 +439,7 @@ set(PARQUET_SRCS
         "${GEN_LIBRARY_DIR}/parquet_types.cpp"
         )
 #list(TRANSFORM PARQUET_SRCS PREPEND "${LIBRARY_DIR}/") # cmake 3.12
-add_library(_parquet ${PARQUET_SRCS})
+add_library(_parquet OBJECT ${PARQUET_SRCS})
 add_library(ch_contrib::parquet ALIAS _parquet)
 target_include_directories(_parquet SYSTEM BEFORE
     PUBLIC
@@ -443,13 +449,25 @@ target_link_libraries(_parquet
     PUBLIC _arrow
     PRIVATE
         ch_contrib::thrift
+        ch_contrib::qpl
         boost::headers_only
         boost::regex
         OpenSSL::Crypto OpenSSL::SSL)
 
+set(PARQUET_LINUX_TOOLCHAIN_REQUIRED_FLAGS "-Wall;-Wextra;-fPIC;-fstack-protector;-fstack-protector-strong;-fstack-clash-protection;--param=ssp-buffer-size=4")
+
 if (SANITIZE STREQUAL "undefined")
-    target_compile_options(_parquet PRIVATE -fno-sanitize=undefined)
-    target_compile_options(_arrow PRIVATE -fno-sanitize=undefined)
+    message(STATUS "SANITIZE STREQUAL")
+    target_compile_options(_parquet
+            PRIVATE ${PARQUET_LINUX_TOOLCHAIN_REQUIRED_FLAGS}
+            PRIVATE "$<$<CONFIG:Debug>:>"
+            PRIVATE "$<$<CONFIG:Release>:-O3;-D_FORTIFY_SOURCE=2>")    
+    # target_compile_options(_parquet PRIVATE -fno-sanitize=undefined)
+    # target_compile_options(_arrow PRIVATE -fno-sanitize=undefined)
+    target_compile_options(_arrow
+            PRIVATE ${PARQUET_LINUX_TOOLCHAIN_REQUIRED_FLAGS}
+            PRIVATE "$<$<CONFIG:Debug>:>"
+            PRIVATE "$<$<CONFIG:Release>:-O3;-D_FORTIFY_SOURCE=2>")    
 endif ()
 
 # === tools
@@ -462,5 +480,19 @@ foreach (TOOL ${PARQUET_TOOLS})
 endforeach ()
 
 # The library is large - avoid bloat.
-target_compile_options (_arrow PRIVATE -g0)
-target_compile_options (_parquet PRIVATE -g0)
+# target_compile_options (_arrow PRIVATE -g0)
+target_compile_options(_parquet
+    PRIVATE ${PARQUET_LINUX_TOOLCHAIN_REQUIRED_FLAGS}
+    PRIVATE "$<$<CONFIG:Debug>:>"
+    PRIVATE "$<$<CONFIG:Release>:-O3;-D_FORTIFY_SOURCE=2>") 
+# target_compile_options (_parquet PRIVATE -g0)
+target_compile_options(_arrow
+    PRIVATE ${PARQUET_LINUX_TOOLCHAIN_REQUIRED_FLAGS}
+    PRIVATE "$<$<CONFIG:Debug>:>"
+    PRIVATE "$<$<CONFIG:Release>:-O3;-D_FORTIFY_SOURCE=2>") 
+
+target_link_libraries(_parquet PRIVATE ${CMAKE_DL_LIBS})  
+add_library (ch_contrib::parquet ALIAS _parquet) 
+target_link_libraries(_arrow PRIVATE ${CMAKE_DL_LIBS})   
+add_library (ch_contrib::arrow ALIAS _arrow)
+message(STATUS "arrow-cmake done")

@@ -530,6 +530,14 @@ dbms_target_link_libraries(PUBLIC ch_contrib::qpl)
 dbms_target_include_directories(SYSTEM BEFORE PUBLIC ${ClickHouse_SOURCE_DIR}/contrib/qpl/include)
 endif ()
 
+if (TARGET ch_contrib::arrow)
+dbms_target_link_libraries(PUBLIC ch_contrib::arrow)
+endif ()
+
+if (TARGET ch_contrib::parquet)
+dbms_target_link_libraries(PUBLIC ch_contrib::parquet)
+endif ()
+
 dbms_target_link_libraries(PRIVATE _boost_context)
 
 if (ENABLE_NLP)

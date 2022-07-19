@@ -875,7 +875,8 @@ void ArrowColumnToCHColumn::arrowTableToCHChunk(Chunk & res, std::shared_ptr<arr
 
     // UInt64 tsc = rdtsc();
 #ifdef ENABLE_QPL_ANALYSIS    
-    arrowColumnsToCHChunkWithFilter(res, name_to_column_ptr);
+    // arrowColumnsToCHChunkWithFilter(res, name_to_column_ptr);
+    arrowColumnsToCHChunk(res, name_to_column_ptr);
 #else    
     arrowColumnsToCHChunk(res, name_to_column_ptr);
 #endif    
