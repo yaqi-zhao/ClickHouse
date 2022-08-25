@@ -157,6 +157,7 @@ target_link_libraries(_orc PRIVATE
     ch_contrib::snappy
     ch_contrib::zlib
     ch_contrib::zstd)
+        
 target_include_directories(_orc SYSTEM BEFORE PUBLIC ${ORC_INCLUDE_DIR})
 target_include_directories(_orc SYSTEM BEFORE PUBLIC ${ORC_BUILD_INCLUDE_DIR})
 target_include_directories(_orc SYSTEM PRIVATE
@@ -367,6 +368,16 @@ SET(ARROW_SRCS "${LIBRARY_DIR}/util/compression_zlib.cc" ${ARROW_SRCS})
 add_definitions(-DARROW_WITH_ZSTD)
 SET(ARROW_SRCS "${LIBRARY_DIR}/util/compression_zstd.cc" ${ARROW_SRCS})
 
+if (OS_LINUX AND ARCH_AMD64 AND (ENABLE_AVX2 OR ENABLE_AVX512))
+    option (ENABLE_QPL "Enable Intel® Query Processing Library" OFF)
+elseif(ENABLE_QPL)
+    message (${RECONFIGURE_MESSAGE_LEVEL} "QPL library is only supported on x86_64 arch with avx2/avx512 support")
+endif()
+if (ENABLE_QPL)
+add_definitions(-DENABLE_QPL_ANALYSIS)
+message("ENABLE_QPL_ANALYSIS" ${ENABLE_QPL_ANALYSIS})
+endif()
+
 
 add_library(_arrow ${ARROW_SRCS})
 
@@ -383,11 +394,16 @@ target_link_libraries(_arrow PRIVATE
     ch_contrib::zstd
 )
 target_link_libraries(_arrow PUBLIC _orc)
+# if (ENABLE_QPL)
+# target_link_libraries(_arrow PUBLIC ch_contrib::qpl)
+# endif()
 
 add_dependencies(_arrow protoc)
 
 target_include_directories(_arrow SYSTEM BEFORE PUBLIC ${ARROW_SRC_DIR})
 target_include_directories(_arrow SYSTEM BEFORE PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/cpp/src")
+# SET(QPL_PROJECT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+# target_include_directories(_arrow SYSTEM BEFORE PUBLIC "${QPL_PROJECT_DIR}/include")
 
 target_include_directories(_arrow SYSTEM PRIVATE ${ARROW_SRC_DIR})
 target_include_directories(_arrow SYSTEM PRIVATE ${HDFS_INCLUDE_DIR})
@@ -440,12 +456,16 @@ target_include_directories(_parquet SYSTEM BEFORE
         "${ClickHouse_SOURCE_DIR}/contrib/arrow/cpp/src"
         "${CMAKE_CURRENT_SOURCE_DIR}/cpp/src")
 target_link_libraries(_parquet
-    PUBLIC _arrow
-    PRIVATE
+PUBLIC _arrow
+PRIVATE
         ch_contrib::thrift
         boost::headers_only
         boost::regex
         OpenSSL::Crypto OpenSSL::SSL)
+
+if (ENABLE_QPL)
+target_link_libraries(_parquet PUBLIC ch_contrib::qpl)
+endif()
 
 if (SANITIZE STREQUAL "undefined")
     target_compile_options(_parquet PRIVATE -fno-sanitize=undefined)
